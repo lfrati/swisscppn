@@ -25,12 +25,22 @@
 
     let n1, n2;
 
-    n1 = netinit();
-    n2 = netinit();
+    const conf = [
+      { type: "par", width: 2, f: "relu_norm" },
+      { type: "par", width: 2, f: "cos" },
+      { type: "fc", width: 1, f: "fsig" },
+    ];
 
-    function initShader() {
+    let [params, finalize] = parse(conf);
+    n1 = instantiate_params(params);
+    n2 = instantiate_params(params);
+    console.log(n1);
+    console.log(n2);
+    console.log(finalize(n1, n2));
+
+    function initShader(params) {
       n1 = n2;
-      n2 = netinit();
+      n2 = instantiate_params(params);
 
       let Inc = `
     //*********************************************************
@@ -41,7 +51,7 @@
     #define N 2 // number of recursive applications
     #define s 3. // controls steepness of fast-sigmoid
     // #define range 5. // xy-coords range
-    #define range 8. // xy-coords range
+    #define range 16. // xy-coords range
 
     float ease4(float x) {return 1. - pow(1. - x, 4.);}
     float ease3(float x) {return 1. - pow(1. - x, 3.);}
@@ -58,51 +68,13 @@
     //***********************  NETWORK  ***********************
     //*********************************************************
 
-    struct Net
-    {
-      mat4 w1_1;
-      mat4 w1_2;
-      mat4 w2_1;
-      mat4 w2_2;
-      mat4 w3;
-      vec4 b1_1;
-      vec4 b1_2;
-      vec4 b2_1;
-      vec4 b2_2;
-    };
-
-    mat4 lerp(mat4 w1, mat4 w2, float t){return w1 + (w2 - w1)*t;}
-    vec4 lerp(vec4 w1, vec4 w2, float t){return w1 + (w2 - w1)*t;}
-    void lerp(inout Net n1, in Net n2, const float t){
-              n1.w1_1 = lerp(n1.w1_1, n2.w1_1, t);
-              n1.w1_2 = lerp(n1.w1_2, n2.w1_2, t);
-              n1.w2_1 = lerp(n1.w2_1, n2.w2_1, t);
-              n1.w2_2 = lerp(n1.w2_2, n2.w2_2, t);
-              n1.w3 =  lerp(n1.w3, n2.w3, t);
-              n1.b1_1 = lerp(n1.b1_1, n2.b1_1, t);
-              n1.b1_2 = lerp(n1.b1_2, n2.b1_2, t);
-              n1.b2_1 = lerp(n1.b2_1, n2.b2_1, t);
-              n1.b2_2 = lerp(n1.b2_2, n2.b2_2, t);
-    }
-
-    vec4 f(vec4 inputs, Net n){
-      vec4 h1_1 = relu_norm(inputs * n.w1_1 + n.b1_1);
-      vec4 h1_2 = relu_norm(inputs * n.w1_2 + n.b1_2);
-      vec4 h1 = h1_1 + h1_2 ;
-      vec4 h2_1 = cos((h1 * n.w2_2)*0.5 + n.b2_2);
-      vec4 h2_2 = cos((h1 * n.w2_1)*0.5 + n.b2_1);
-      vec4 h2 = h2_1 + h2_2 ;
-      return fsig(h2 * n.w3);
-    }
-
-    Net n1 = ${n1};
-    Net n2 = ${n2};
+    ${finalize(n1, n2)}
     `;
 
       return Inc;
     }
 
-    let Inc = initShader();
+    let Inc = initShader(params);
     const slowdown = 6;
 
     glsl.loop(({ time }) => {
@@ -118,10 +90,10 @@
       // interpolate n1 and n2 weights
       // float t = easeCos(easeCos(time));
       float t = easeSmooth(easeSmooth(time));
-      lerp(n1,n2,t);
-      vec4 oup = f(inp, n1);
+      Net n3 = lerp(n1,n2,t);
+      vec4 oup = forward(inp, n3);
       for(int i=0; i < N;i++){
-         oup = f(inp + oup, n1);
+         oup = forward(inp + oup, n3);
       }
       // Set final results as pixel values
       FOut = vec4(oup.xyz,1.0); // R,G,B,A`,
@@ -129,7 +101,7 @@
 
       if (time > slowdown) {
         glsl.resetTime();
-        Inc = initShader();
+        Inc = initShader(params);
         console.log("reset:", time);
       }
     });
