@@ -23,24 +23,30 @@
     const canvas = document.getElementById("c");
     const glsl = SwissGL(canvas);
 
+    canvas.onclick = () => {
+      console.log("clicked");
+    };
+
     let n1, n2;
 
     const conf = [
       { type: "par", width: 2, f: "relu_norm" },
+      { type: "f", f: "halve" },
+      // { type: "f", f: "round" },
+      // { type: "par", width: 2, f: "cos", affine: false },
       { type: "par", width: 2, f: "cos" },
-      { type: "fc", width: 1, f: "fsig" },
+      { type: "lin", f: "fsigmoid" },
     ];
 
-    let [params, finalize] = parse(conf);
-    n1 = instantiate_params(params);
-    n2 = instantiate_params(params);
-    console.log(n1);
-    console.log(n2);
-    console.log(finalize(n1, n2));
+    let [code, params] = parse(conf);
+    console.log(code);
+    console.log(params);
+    n1 = make_init(params);
+    n2 = make_init(params);
 
     function initShader(params) {
       n1 = n2;
-      n2 = instantiate_params(params);
+      n2 = make_init(params);
 
       let Inc = `
     //*********************************************************
@@ -51,7 +57,7 @@
     #define N 2 // number of recursive applications
     #define s 3. // controls steepness of fast-sigmoid
     // #define range 5. // xy-coords range
-    #define range 16. // xy-coords range
+    #define range 8. // xy-coords range
 
     float ease4(float x) {return 1. - pow(1. - x, 4.);}
     float ease3(float x) {return 1. - pow(1. - x, 3.);}
@@ -59,16 +65,25 @@
     float easeCos(float x) {return 0.5 - cos(x*PI)/2.;}
     float easeSmooth(float x) { return 3. * x * x - 2. * x * x * x;}
 
+    vec4 halve(vec4 x){return x/vec4(2.0);}
     vec4 relu_norm(vec4 xs){return (max(xs,0.)-0.4)/0.58;}
     vec4 leaky_relu(vec4 xs){return max(xs,0.1 * xs);}
-    vec4 sig (vec4 xs){return (1.0/(1.0+exp(-2.0*xs)));}
-    vec4 fsig (vec4 xs){return ((s * xs)/(s * abs(xs) + 1.)) * 0.5  + 0.5;}
+    vec4 sigmoid (vec4 xs){return (1.0/(1.0+exp(-2.0*xs)));}
+    vec4 fsigmoid (vec4 xs){return ((s * xs)/(s * abs(xs) + 1.)) * 0.5  + 0.5;}
+    float max4 (vec4 xs) {
+      return max(max(max(xs.x,xs.y),xs.z),xs.w);
+    }
+    // https://blog.feedly.com/tricks-of-the-trade-logsumexp/
+    vec4 softmax(in vec4 xs){float c = max4(xs); return xs - log( dot( exp(xs - c), vec4(1.0))) - c;}
 
     //*********************************************************
     //***********************  NETWORK  ***********************
     //*********************************************************
 
-    ${finalize(n1, n2)}
+    ${code}
+
+    Net net1 = ${n1};
+    Net net2 = ${n2};
     `;
 
       return Inc;
@@ -87,13 +102,13 @@
         FP: `vec2 st = XY * range;
       float radius = distance(st,vec2(0.));
       vec4 inp = vec4(st.xy, cos(radius),sin(radius));
-      // interpolate n1 and n2 weights
+      // interpolate net1 and net2 weights
       // float t = easeCos(easeCos(time));
       float t = easeSmooth(easeSmooth(time));
-      Net n3 = lerp(n1,n2,t);
-      vec4 oup = forward(inp, n3);
+      lerp(net1, net2, t);
+      vec4 oup = forward(inp, net1);
       for(int i=0; i < N;i++){
-         oup = forward(inp + oup, n3);
+         oup = forward(inp + oup, net1);
       }
       // Set final results as pixel values
       FOut = vec4(oup.xyz,1.0); // R,G,B,A`,
