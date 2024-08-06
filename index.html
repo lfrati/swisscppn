@@ -27,10 +27,9 @@
       console.log("clicked");
     };
 
-    let n1, n2;
-
     const conf = [
       { type: "par", width: 2, f: "relu_norm" },
+      // { type: "par", width: 2, f: "leaky_relu" },
       { type: "f", f: "halve" },
       // { type: "f", f: "round" },
       // { type: "par", width: 2, f: "cos", affine: false },
@@ -41,13 +40,11 @@
     let [code, params] = parse(conf);
     console.log(code);
     console.log(params);
-    n1 = make_init(params);
-    n2 = make_init(params);
+
+    let [texnet, COLUMNS] = make_init(params);
+    console.log(texnet);
 
     function initShader(params) {
-      n1 = n2;
-      n2 = make_init(params);
-
       let Inc = `
     //*********************************************************
     //*********************** UTILITIES ***********************
@@ -56,14 +53,7 @@
     #define HALF_PI 1.57079632679
     #define N 2 // number of recursive applications
     #define s 3. // controls steepness of fast-sigmoid
-    // #define range 5. // xy-coords range
     #define range 8. // xy-coords range
-
-    float ease4(float x) {return 1. - pow(1. - x, 4.);}
-    float ease3(float x) {return 1. - pow(1. - x, 3.);}
-    float ease2(float x) {return 1. - pow(1. - x, 2.);}
-    float easeCos(float x) {return 0.5 - cos(x*PI)/2.;}
-    float easeSmooth(float x) { return 3. * x * x - 2. * x * x * x;}
 
     vec4 halve(vec4 x){return x/vec4(2.0);}
     vec4 relu_norm(vec4 xs){return (max(xs,0.)-0.4)/0.58;}
@@ -82,43 +72,75 @@
 
     ${code}
 
-    Net net1 = ${n1};
-    Net net2 = ${n2};
+    vec4 get_vec4(int i, int j){
+      return tex(ivec2(i, j));
+    }
+
+    mat4 get_mat4(int i, int j){
+      return mat4(tex(ivec2(i, j+0)),
+                  tex(ivec2(i, j+1)),
+                  tex(ivec2(i, j+2)),
+                  tex(ivec2(i, j+3))
+      );
+    }
+
     `;
 
+      console.log(Inc);
       return Inc;
     }
 
     let Inc = initShader(params);
     const slowdown = 6;
 
-    glsl.loop(({ time }) => {
-      glsl.adjustCanvas();
+    const GRID_SIZE = 5;
+    const ROWS = GRID_SIZE * GRID_SIZE;
 
-      const texture = glsl({
-        time: time / slowdown,
-        Aspect: "fit",
-        Inc,
-        FP: `vec2 st = XY * range;
+    const seed = Math.ceil(Math.random() * 1000);
+    const points = glsl(
+      {
+        FP: `
+	vec3 rnd1 = hash(I.xyx + ${seed});
+	vec2 pos1 = (rnd1.xy-0.5)*2.*1.5;
+	vec3 rnd2 = hash(I.yxy + ${seed});
+	vec2 pos2 = (rnd2.xy-0.5)*2.*1.5;
+	FOut = vec4(pos1, pos2);`,
+      },
+      { size: [ROWS, COLUMNS], format: "rgba32f", tag: "points" }
+    );
+    // glsl({ points, FP: `points(UV).xy/6.0+0.5, 0, 1` });
+
+    console.log(points);
+
+    // glsl.loop(({ time }) => {
+    glsl.adjustCanvas();
+
+    const texture = glsl({
+      Grid: [GRID_SIZE, GRID_SIZE],
+      // time: time / slowdown,
+      Aspect: "fit",
+      tex: points,
+      Inc,
+      VP: `
+      // tile positioning
+      vec2 p = (vec2(ID.xy)+0.5) / vec2(Grid.xy);
+	    VPos.xy = 2.0*p-1.0 + XY*0.15;`,
+      FP: `
+      // texnet uses: 
+      // - tex: sampler2D (passed to the shader)
+      // - row: int (calculated below)
+      int row = ID.y * ${GRID_SIZE} + ID .x;
+      Net net1 = ${texnet};
+      vec2 st = XY * range;
       float radius = distance(st,vec2(0.));
-      vec4 inp = vec4(st.xy, cos(radius),sin(radius));
-      // interpolate net1 and net2 weights
-      // float t = easeCos(easeCos(time));
-      float t = easeSmooth(easeSmooth(time));
-      lerp(net1, net2, t);
+      vec4 inp = vec4(st.xy, cos(radius), sin(radius));
       vec4 oup = forward(inp, net1);
       for(int i=0; i < N;i++){
          oup = forward(inp + oup, net1);
       }
       // Set final results as pixel values
       FOut = vec4(oup.xyz,1.0); // R,G,B,A`,
-      });
-
-      if (time > slowdown) {
-        glsl.resetTime();
-        Inc = initShader(params);
-        console.log("reset:", time);
-      }
     });
+    // });
   </script>
 </body>
